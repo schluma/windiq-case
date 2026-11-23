@@ -19,9 +19,7 @@ var faviconSVG []byte
 
 type server struct {
 	maxAge time.Duration
-	// newestMeasurement is the timestamp of the newest valid measurement.
-	// Zero means no data yet. The ingest fills it from block 2 on.
-	newestMeasurement time.Time
+	store  *store
 }
 
 // routes returns the HTTP handler with all routes.
@@ -64,17 +62,30 @@ type healthResponse struct {
 	NewestMeasurement *time.Time   `json:"newest_measurement,omitempty"`
 	DataAgeSeconds    *int64       `json:"data_age_seconds,omitempty"`
 	MaxAgeSeconds     int64        `json:"max_age_seconds"`
+	// LastSuccessfulPoll and LastError describe the ingest; they do not
+	// affect the status code, only the data age does.
+	LastSuccessfulPoll *time.Time `json:"last_successful_poll,omitempty"`
+	LastError          string     `json:"last_error,omitempty"`
 }
 
 func (s *server) health(w http.ResponseWriter, _ *http.Request) {
-	resp := healthResponse{Status: healthOK, MaxAgeSeconds: int64(s.maxAge.Seconds())}
+	st := s.store.status()
+	resp := healthResponse{
+		Status:        healthOK,
+		MaxAgeSeconds: int64(s.maxAge.Seconds()),
+		LastError:     st.LastError,
+	}
+	if !st.LastSuccessfulPoll.IsZero() {
+		lastPoll := st.LastSuccessfulPoll.UTC()
+		resp.LastSuccessfulPoll = &lastPoll
+	}
 	code := http.StatusOK
 
-	if s.newestMeasurement.IsZero() {
+	if st.NewestMeasurement.IsZero() {
 		resp.Status = healthNoData
 		code = http.StatusServiceUnavailable
 	} else {
-		newest := s.newestMeasurement.UTC()
+		newest := st.NewestMeasurement.UTC()
 		age := time.Since(newest)
 		ageSec := int64(age.Seconds())
 		resp.NewestMeasurement = &newest
@@ -100,7 +111,8 @@ type indexData struct {
 
 func (s *server) index(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	err := templates.ExecuteTemplate(w, "index.html", indexData{NewestMeasurement: s.newestMeasurement})
+	data := indexData{NewestMeasurement: s.store.status().NewestMeasurement}
+	err := templates.ExecuteTemplate(w, "index.html", data)
 	if err != nil {
 		slog.Error("render index", "err", err)
 	}

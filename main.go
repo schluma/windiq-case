@@ -5,10 +5,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -33,8 +35,55 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	pollInterval, err := time.ParseDuration(envOr("POLL_INTERVAL", "5m"))
+	if err != nil {
+		return err
+	}
+	maxInvalidations, err := strconv.Atoi(envOr("MAX_INVALIDATIONS_PER_POLL", "24"))
+	if err != nil {
+		return fmt.Errorf("MAX_INVALIDATIONS_PER_POLL: %w", err)
+	}
+	apiURL := envOr("WINDIQ_API_URL", "https://windiq-mock-api.sliplane.app")
+	snapshotPath := envOr("SNAPSHOT_PATH", "data/snapshot.json")
+	clientID := os.Getenv("WINDIQ_CLIENT_ID")
+	clientSecret := os.Getenv("WINDIQ_CLIENT_SECRET")
+	if clientID == "" || clientSecret == "" {
+		return errors.New("WINDIQ_CLIENT_ID and WINDIQ_CLIENT_SECRET must be set")
+	}
 
-	s := &server{maxAge: maxAge}
+	st := newStore()
+	snap, outdated, err := loadSnapshot(snapshotPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		slog.Info("no snapshot yet, starting empty", "path", snapshotPath)
+	case err != nil:
+		// A broken snapshot must not stop the app; the first poll refills everything.
+		slog.Error("snapshot unusable, starting empty", "path", snapshotPath, "err", err)
+	case outdated:
+		st.restore(snap)
+		slog.Warn("snapshot has an old format, showing it until a full reload succeeds",
+			"path", snapshotPath, "format", snap.FormatVersion, "current", snapshotFormatVersion,
+			"measurements", len(snap.Measurements))
+	default:
+		st.restore(snap)
+		slog.Info("snapshot loaded", "path", snapshotPath, "measurements", len(snap.Measurements), "saved_at", snap.SavedAt)
+	}
+
+	in := &ingester{
+		client:           newAPIClient(apiURL, clientID, clientSecret),
+		store:            st,
+		snapshotPath:     snapshotPath,
+		interval:         pollInterval,
+		maxInvalidations: maxInvalidations,
+		fullReload:       outdated,
+	}
+	ingestDone := make(chan struct{})
+	go func() {
+		in.run(ctx)
+		close(ingestDone)
+	}()
+
+	s := &server{maxAge: maxAge, store: st}
 
 	srv := &http.Server{
 		Addr:    ":" + port,
@@ -65,7 +114,11 @@ func run() error {
 	slog.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	err = srv.Shutdown(shutdownCtx)
+	// Wait until the ingest goroutine has stopped (it stops when ctx is
+	// cancelled), so that a snapshot being written is finished.
+	<-ingestDone
+	return err
 }
 
 func envOr(key, fallback string) string {

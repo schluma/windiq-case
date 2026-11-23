@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,8 +10,14 @@ import (
 	"time"
 )
 
+// newTestHandler builds the handler with one valid measurement at newest,
+// or no data when newest is zero.
 func newTestHandler(newest time.Time) http.Handler {
-	s := &server{maxAge: 3 * time.Hour, newestMeasurement: newest}
+	st := newStore()
+	if !newest.IsZero() {
+		st.upsert([]measurement{{Time: newest, SpeedMS: 5, Valid: true, Version: 1}})
+	}
+	s := &server{maxAge: 3 * time.Hour, store: st}
 	return s.routes()
 }
 
@@ -78,6 +85,26 @@ func TestHealth(t *testing.T) {
 				t.Errorf("data_age_seconds = %v, want about %d", body.DataAgeSeconds, tc.wantAge)
 			}
 		})
+	}
+}
+
+func TestHealthReportsIngestState(t *testing.T) {
+	st := newStore()
+	st.upsert([]measurement{{Time: time.Now().Add(-time.Hour), SpeedMS: 5, Valid: true, Version: 1}})
+	st.recordPoll(errors.New("api status 503: down"), time.Now())
+	h := (&server{maxAge: 3 * time.Hour, store: st}).routes()
+
+	rec := do(t, h, http.MethodGet, "/health")
+	// An ingest error alone does not make /health fail; only the data age counts.
+	if rec.Code != http.StatusOK {
+		t.Errorf("code = %d, want 200", rec.Code)
+	}
+	body := decodeHealth(t, rec)
+	if body.LastError != "api status 503: down" {
+		t.Errorf("last_error = %q", body.LastError)
+	}
+	if body.LastSuccessfulPoll != nil {
+		t.Errorf("last_successful_poll = %v, want none", body.LastSuccessfulPoll)
 	}
 }
 
