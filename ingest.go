@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"time"
 )
@@ -160,6 +161,7 @@ func (in *ingester) poll(ctx context.Context) error {
 		"pruned", pruned,
 		"newest", in.store.status().NewestMeasurement,
 	)
+	logResult(in.store)
 
 	saveErr := in.saveSnapshot()
 	if saveErr == nil && in.fullReload {
@@ -214,6 +216,25 @@ func (in *ingester) refreshMasterData(ctx context.Context) error {
 		slog.Info("master data updated", "turbine_version", t.Version, "site_version", s.Version)
 	}
 	return errors.Join(errs...)
+}
+
+// logResult writes the current yield after each poll, so jumps are visible
+// in the log.
+func logResult(s *store) {
+	r, err := s.result(gapIgnore)
+	if err != nil {
+		slog.Warn("no yield result", "err", err)
+		return
+	}
+	slog.Info("yield",
+		"p50_mwh", math.Round(r.P50MWh),
+		"p90_mwh", math.Round(r.P90MWh),
+		"gross_mwh", math.Round(r.GrossMWh),
+		"valid_hours", r.ValidHours,
+		"expected_hours", r.ExpectedHours,
+		"turbine_version", r.TurbineVersion,
+		"site_version", r.SiteVersion,
+	)
 }
 
 // versionKey identifies one version of one hour.

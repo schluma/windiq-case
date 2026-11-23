@@ -127,6 +127,52 @@ func TestIndex(t *testing.T) {
 	})
 }
 
+func TestIndexShowsResult(t *testing.T) {
+	st := newStore()
+	// Losses of 0 % keep the expected MWh simple; 0.0 % must still be listed.
+	st.setMasterData(&mast{MeasurementHeightM: 100}, &turbine{HubHeightM: 100, PowerCurve: testCurve, Version: 7}, &site{Uncertainty: 0.1, Version: 9})
+	// 2 hours at 10 m/s = 4000 kWh, no losses: P50 = 4 MWh, P90 = 4 * 0.8718.
+	now := time.Now().UTC().Truncate(time.Hour)
+	st.upsert([]measurement{
+		{Time: now, SpeedMS: 10, Valid: true, Version: 1},
+		{Time: now.Add(-time.Hour), SpeedMS: 10, Valid: true, Version: 1},
+	})
+	h := (&server{maxAge: 3 * time.Hour, store: st}).routes()
+
+	body := do(t, h, http.MethodGet, "/").Body.String()
+	for _, want := range []string{"4 MWh", "3 MWh", "2 von 8760 Stunden", "Anlage v7, Standort v9"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page does not contain %q", want)
+		}
+	}
+
+	for _, want := range []string{"<svg", "Bruttoenergie pro Monat", "Unsicherheit U</th><td>10.0 %", "Verlust Abschattung</th><td>0.0 %"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page does not contain %q", want)
+		}
+	}
+	gross := strings.Index(body, ">AEP brutto<")
+	net := strings.Index(body, ">AEP netto (P50)<")
+	p90 := strings.Index(body, ">P90<")
+	if gross < 0 || !(gross < net && net < p90) {
+		t.Errorf("tile order: AEP brutto at %d, AEP netto at %d, P90 at %d", gross, net, p90)
+	}
+
+	// Scaled to 8760 hours: every month has fewer than a week of valid hours,
+	// so all gaps are filled with the overall mean of 2 MWh per hour.
+	body = do(t, h, http.MethodGet, "/?gaps=scale").Body.String()
+	if !strings.Contains(body, "17.520 MWh") {
+		t.Error("scaled page does not contain 17.520 MWh")
+	}
+}
+
+func TestIndexRejectsUnknownGapMode(t *testing.T) {
+	rec := do(t, newTestHandler(time.Time{}), http.MethodGet, "/?gaps=guess")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
 func TestRouting(t *testing.T) {
 	h := newTestHandler(time.Time{})
 	rec := do(t, h, http.MethodGet, "/does-not-exist")

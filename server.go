@@ -12,7 +12,10 @@ import (
 //go:embed templates/*.html
 var templateFS embed.FS
 
-var templates = template.Must(template.ParseFS(templateFS, "templates/*.html"))
+var templates = template.Must(template.New("").Funcs(template.FuncMap{
+	"thousands": formatThousands,
+	"pct":       func(fraction float64) float64 { return 100 * fraction },
+}).ParseFS(templateFS, "templates/*.html"))
 
 //go:embed assets/favicon.svg
 var faviconSVG []byte
@@ -107,12 +110,35 @@ func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 
 type indexData struct {
 	NewestMeasurement time.Time
+	Mode              gapMode
+	Result            result
+	CalcError         string // set when there is no result yet
+	MonthChart        template.HTML
+	DayChart          template.HTML
 }
 
-func (s *server) index(w http.ResponseWriter, _ *http.Request) {
+func (s *server) index(w http.ResponseWriter, r *http.Request) {
+	mode := gapMode(r.URL.Query().Get("gaps"))
+	if mode == "" {
+		mode = gapIgnore
+	}
+	if mode != gapIgnore && mode != gapScale {
+		http.Error(w, "gaps must be ignore or scale", http.StatusBadRequest)
+		return
+	}
+
+	data := indexData{NewestMeasurement: s.store.status().NewestMeasurement, Mode: mode}
+	res, err := s.store.result(mode)
+	if err != nil {
+		data.CalcError = err.Error()
+	} else {
+		data.Result = res
+		data.MonthChart = monthChart(res)
+		data.DayChart = dayChart(res)
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	data := indexData{NewestMeasurement: s.store.status().NewestMeasurement}
-	err := templates.ExecuteTemplate(w, "index.html", data)
+	err = templates.ExecuteTemplate(w, "index.html", data)
 	if err != nil {
 		slog.Error("render index", "err", err)
 	}

@@ -49,6 +49,29 @@ Every request except `/livez` is logged as one line (method, path, status, durat
 - After a failed poll the next try comes after 15 s, doubling up to the poll interval; `Retry-After` is honored.
 - After every change the store is written atomically to the snapshot. On start the snapshot is loaded first, so the app shows data even when the API is down. A snapshot in an older format (after a change of the normalization rules) is still shown, but the first poll reloads everything and re-normalizes it; the old snapshot is only overwritten once that has succeeded.
 
+## Calculation
+
+Over the 12 months up to the newest valid measurement (`calc.go`):
+
+```
+v_hub     = v_mast * (h_hub / h_mast) ^ alpha
+AEP gross = sum over the valid hours of power(v_hub) * 1 h
+AEP net   = AEP gross * (1 - availability) * (1 - electrical) * (1 - wake)
+P50       = AEP net
+P90       = P50 * (1 - 1.282 * U)
+```
+
+- The power curve is interpolated linearly. Below its first point and above its last point (cut-out) the turbine produces nothing.
+- Hours without a valid value are ignored by default; the completeness is always shown. `?gaps=scale` fills the missing hours of each month with that month's mean energy per valid hour, so gaps that cluster in one season do not bias the result. A month with less than one week of valid hours uses the mean over the whole window instead.
+- The result is computed once per data change and cached, so page views do not recalculate.
+
+## Dashboard
+
+- Tiles for P50, P90, AEP gross and completeness.
+- Gross energy per month (bars, the filled part lighter) with the share of valid hours below each month.
+- Daily mean wind speed at hub height; marks below the axis show days with missing hours.
+- The charts are rendered on the server as inline SVG (`charts.go`): no JavaScript library, no CDN, light and dark mode via CSS.
+
 ## Deployment
 
 Render (native Go runtime, Frankfurt), auto-deploys after the CI checks pass.

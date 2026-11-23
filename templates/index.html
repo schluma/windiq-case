@@ -6,9 +6,43 @@
   <title>WindIQ Ertrag</title>
   <link rel="icon" href="/favicon.ico" type="image/svg+xml">
   <style>
-    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-    body { max-width: 960px; margin: 0 auto; padding: 1rem; line-height: 1.5; }
-    .muted { opacity: .7; }
+    :root {
+      color-scheme: light dark;
+      --fg: #1f2328; --muted: #59636e; --bg: #ffffff; --card: #f6f8fa; --border: #d1d9e0;
+      --accent: #0f6e56; --accent-light: #9fd3c0; --warn: #b35900;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fg: #e6edf3; --muted: #9198a1; --bg: #0d1117; --card: #151b23; --border: #3d444d;
+        --accent: #3fb68b; --accent-light: #1f5c47; --warn: #e3a13b;
+      }
+    }
+    body { max-width: 960px; margin: 0 auto; padding: 1rem; line-height: 1.5;
+           font-family: system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+    h1 { margin-bottom: 0; }
+    h2 { font-size: 1.1rem; margin: 2rem 0 .25rem; }
+    .muted { color: var(--muted); }
+    .warn { color: var(--warn); }
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .75rem; margin: 1rem 0; }
+    .tile { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: .75rem 1rem; }
+    .tile .label { color: var(--muted); font-size: .9rem; }
+    .tile .value { font-size: 1.8rem; font-weight: 600; }
+    .tile .sub { color: var(--muted); font-size: .85rem; }
+    svg { width: 100%; height: auto; display: block; }
+    svg .grid { stroke: var(--border); stroke-width: 1; }
+    svg .lbl { fill: var(--muted); font-size: 11px; }
+    svg .low { fill: var(--warn); }
+    svg .bar { fill: var(--accent); }
+    svg .bar-filled { fill: var(--accent-light); }
+    svg .partial { opacity: .5; }
+    svg .line { fill: none; stroke: var(--accent); stroke-width: 1.3; }
+    svg .gap { stroke: var(--warn); stroke-width: 1.5; }
+    .legend { font-size: .85rem; color: var(--muted); }
+    .swatch { display: inline-block; width: .8em; height: .8em; vertical-align: -.05em; border-radius: 2px; }
+    table { border-collapse: collapse; }
+    th, td { text-align: left; padding: .2rem 1.5rem .2rem 0; vertical-align: top; }
+    th { font-weight: normal; color: var(--muted); }
+    select { font: inherit; }
   </style>
 </head>
 <body>
@@ -16,7 +50,75 @@
   {{if .NewestMeasurement.IsZero}}
     <p class="muted">Noch keine Messdaten geladen.</p>
   {{else}}
-    <p>Neuester Messwert: {{.NewestMeasurement.UTC.Format "2006-01-02 15:04 MST"}}</p>
+    <p class="muted">Neuester Messwert: {{.NewestMeasurement.UTC.Format "2006-01-02 15:04"}} UTC</p>
+  {{end}}
+
+  <form method="get">
+    <label>Fehlende Stunden
+      <select name="gaps" onchange="this.form.submit()">
+        <option value="ignore" {{if eq .Mode "ignore"}}selected{{end}}>ignorieren</option>
+        <option value="scale" {{if eq .Mode "scale"}}selected{{end}}>pro Monat hochrechnen</option>
+      </select>
+    </label>
+    <noscript><button>Anwenden</button></noscript>
+  </form>
+
+  {{if .CalcError}}
+    <p class="muted">Noch kein Ergebnis: {{.CalcError}}</p>
+  {{else}}
+  {{with .Result}}
+  <div class="tiles">
+    <div class="tile">
+      <div class="label">AEP brutto</div>
+      <div class="value">{{thousands .GrossMWh}} MWh</div>
+      <div class="sub">laut Kennlinie</div>
+    </div>
+    <div class="tile">
+      <div class="label">AEP netto (P50)</div>
+      <div class="value">{{thousands .P50MWh}} MWh</div>
+      <div class="sub">nach Verlusten</div>
+    </div>
+    <div class="tile">
+      <div class="label">P90</div>
+      <div class="value">{{thousands .P90MWh}} MWh</div>
+      <div class="sub">mit 90 % Wahrscheinlichkeit erreicht</div>
+    </div>
+    <div class="tile">
+      <div class="label">Vollständigkeit</div>
+      <div class="value">{{printf "%.1f" .CompletenessPct}} %</div>
+      <div class="sub">{{.ValidHours}} von {{.ExpectedHours}} Stunden</div>
+    </div>
+  </div>
+  <p class="muted">Zeitraum: {{.From.UTC.Format "2006-01-02 15:04"}} bis {{.To.UTC.Format "2006-01-02 15:04"}} UTC
+    {{if eq .Mode "ignore"}}· fehlende Stunden zählen nicht{{else}}· fehlende Stunden mit dem Mittel ihres Monats aufgefüllt{{end}}</p>
+  {{end}}
+
+  <h2>Bruttoenergie pro Monat</h2>
+  <p class="legend">
+    <span class="swatch" style="background: var(--accent)"></span> gemessen
+    {{if eq .Mode "scale"}}&nbsp; <span class="swatch" style="background: var(--accent-light)"></span> aufgefüllt{{end}}
+    &nbsp;· Prozent unter dem Monat = Anteil gültiger Stunden, <span class="warn">unter 95 % hervorgehoben</span>
+    &nbsp;· * = Monat liegt nur teilweise im Zeitraum (blasser)
+  </p>
+  {{.MonthChart}}
+
+  <h2>Windgeschwindigkeit auf Nabenhöhe, Tagesmittel</h2>
+  <p class="legend"><span class="warn">Striche unter der Achse</span> = Tage mit fehlenden Stunden; Lücken in der Linie = Tage ganz ohne gültigen Wert</p>
+  {{.DayChart}}
+
+  {{with .Result}}
+  <h2>Berechnungsgrundlagen</h2>
+  <table>
+    <tr><th>Mittlere Windgeschwindigkeit Nabe</th><td>{{printf "%.2f" .MeanHubSpeedMS}} m/s</td></tr>
+    <tr><th>Höhenfaktor (h<sub>Nabe</sub> / h<sub>Mess</sub>)<sup>α</sup></th><td>{{printf "%.4f" .ShearFactor}}</td></tr>
+    <tr><th>Verlust Verfügbarkeit</th><td>{{printf "%.1f" (pct .Losses.Availability)}} %</td></tr>
+    <tr><th>Verlust elektrisch</th><td>{{printf "%.1f" (pct .Losses.Electrical)}} %</td></tr>
+    <tr><th>Verlust Abschattung</th><td>{{printf "%.1f" (pct .Losses.Wake)}} %</td></tr>
+    <tr><th>Verlustfaktor (1 − V) · (1 − E) · (1 − A)</th><td>{{printf "%.4f" .LossFactor}} (= {{printf "%.1f" (pct .LossFactor)}} % des Bruttoertrags)</td></tr>
+    <tr><th>Unsicherheit U</th><td>{{printf "%.1f" (pct .Uncertainty)}} %</td></tr>
+    <tr><th>Stammdaten</th><td>Anlage v{{.TurbineVersion}}, Standort v{{.SiteVersion}}</td></tr>
+  </table>
+  {{end}}
   {{end}}
 </body>
 </html>

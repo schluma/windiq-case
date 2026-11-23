@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"sync"
@@ -18,9 +20,19 @@ type store struct {
 
 	// dirty is true while there are changes not yet written to the snapshot.
 	dirty bool
+	// generation counts data changes. The cached results belong to
+	// resultsGeneration and are recomputed when it falls behind.
+	generation        int
+	results           map[gapMode]calcOutcome
+	resultsGeneration int
 
 	lastSuccessfulPoll time.Time
 	lastError          string
+}
+
+type calcOutcome struct {
+	result result
+	err    error
 }
 
 func newStore() *store {
@@ -78,7 +90,7 @@ func (s *store) merge(ms []measurement, reload bool) upsertResult {
 		}
 	}
 	if len(res.Added) > 0 || len(res.Corrections) > 0 {
-		s.dirty = true
+		s.changed()
 	}
 	return res
 }
@@ -140,7 +152,7 @@ func (s *store) prune(cutoff time.Time) int {
 		}
 	}
 	if removed > 0 {
-		s.dirty = true
+		s.changed()
 	}
 	return removed
 }
@@ -180,7 +192,7 @@ func (s *store) setMasterData(m *mast, t *turbine, st *site) bool {
 		changed = true
 	}
 	if changed {
-		s.dirty = true
+		s.changed()
 	}
 	return changed
 }
@@ -263,4 +275,55 @@ func (s *store) restore(snap snapshot) {
 	s.turbine = snap.Turbine
 	s.site = snap.Site
 	s.dirty = false
+	s.generation++
+}
+
+// changed marks a data change. The caller holds the write lock.
+func (s *store) changed() {
+	s.dirty = true
+	s.generation++
+}
+
+// result returns the yield calculation for mode. It is computed at most
+// once per data change, so page views under load cost almost nothing.
+func (s *store) result(mode gapMode) (result, error) {
+	s.mu.RLock()
+	fresh := s.results != nil && s.resultsGeneration == s.generation
+	outcome, known := s.results[mode]
+	s.mu.RUnlock()
+
+	if !fresh {
+		s.mu.Lock()
+		if s.results == nil || s.resultsGeneration != s.generation {
+			s.recalculate()
+		}
+		outcome, known = s.results[mode]
+		s.mu.Unlock()
+	}
+	if !known {
+		return result{}, fmt.Errorf("unknown gap mode %q", mode)
+	}
+	return outcome.result, outcome.err
+}
+
+// recalculate computes the results for all gap modes. The caller holds the
+// write lock.
+func (s *store) recalculate() {
+	ms := make([]measurement, 0, len(s.measurements))
+	for _, m := range s.measurements {
+		ms = append(ms, m)
+	}
+
+	results := map[gapMode]calcOutcome{}
+	for _, mode := range []gapMode{gapIgnore, gapScale} {
+		var o calcOutcome
+		if s.mast == nil || s.turbine == nil || s.site == nil {
+			o.err = errors.New("master data not loaded yet")
+		} else {
+			o.result, o.err = calculate(ms, *s.mast, *s.turbine, *s.site, mode)
+		}
+		results[mode] = o
+	}
+	s.results = results
+	s.resultsGeneration = s.generation
 }

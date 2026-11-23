@@ -88,6 +88,40 @@ func TestCountInvalidations(t *testing.T) {
 	}
 }
 
+func TestResultIsCachedAndRefreshed(t *testing.T) {
+	s := newStore()
+	_, err := s.result(gapIgnore)
+	if err == nil {
+		t.Fatal("expected an error without master data")
+	}
+
+	s.setMasterData(&mast{MeasurementHeightM: 100}, &turbine{HubHeightM: 100, PowerCurve: testCurve}, &site{})
+	s.upsert([]measurement{meas(0, 5, true, 1, 0)})
+	first, err := s.result(gapIgnore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	near(t, "gross after first value", first.GrossMWh, 1) // 5 m/s = 1000 kW
+
+	generation := s.resultsGeneration
+	_, _ = s.result(gapIgnore)
+	if s.resultsGeneration != generation {
+		t.Error("result was recomputed without a data change")
+	}
+
+	s.upsert([]measurement{meas(1, 10, true, 1, 0)})
+	second, err := s.result(gapIgnore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	near(t, "gross after second value", second.GrossMWh, 3) // + 2000 kW
+
+	_, err = s.result("guess")
+	if err == nil {
+		t.Error("unknown mode: expected error")
+	}
+}
+
 func TestPrune(t *testing.T) {
 	s := newStore()
 	s.upsert([]measurement{meas(0, 5, true, 1, 0), meas(1, 5, true, 1, 0), meas(2, 5, true, 1, 0)})
