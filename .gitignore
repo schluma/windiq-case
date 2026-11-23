@@ -1,0 +1,11 @@
+# Build output
+/app
+/app.exe
+/windiq-case
+/windiq-case.exe
+
+# Local snapshot data
+/data/
+
+# Local secrets
+.env
