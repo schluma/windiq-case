@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -223,6 +224,15 @@ func TestDailyMeans(t *testing.T) {
 		t.Errorf("last day = %v with %d of %d hours, want 2026-11-23 with 2 of 10", last.Day, last.ValidHours, last.ExpectedHours)
 	}
 	near(t, "last day mean", last.MeanHubSpeedMS, 5)
+
+	// The chart names the exact first and last day, so the few days of the
+	// first month (no room for its name) are not overlooked.
+	svg := string(dayChart(r))
+	for _, want := range []string{"← 23.11.2025", "23.11.2026 →", "Dez 25", `class="month"`} {
+		if !strings.Contains(svg, want) {
+			t.Errorf("day chart does not contain %q", want)
+		}
+	}
 }
 
 func TestFormatThousands(t *testing.T) {

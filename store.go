@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"html/template"
 	"reflect"
 	"sort"
 	"sync"
@@ -25,6 +26,9 @@ type store struct {
 	generation        int
 	results           map[gapMode]calcOutcome
 	resultsGeneration int
+	// newestValid is updated on every data change, so that status() does
+	// not scan all hours on each request.
+	newestValid time.Time
 
 	lastSuccessfulPoll time.Time
 	lastError          string
@@ -33,6 +37,9 @@ type store struct {
 type calcOutcome struct {
 	result result
 	err    error
+	// The charts depend only on the result, so they are cached with it.
+	monthChart template.HTML
+	dayChart   template.HTML
 }
 
 func newStore() *store {
@@ -220,13 +227,11 @@ func (s *store) status() ingestStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	st := ingestStatus{LastSuccessfulPoll: s.lastSuccessfulPoll, LastError: s.lastError}
-	for _, m := range s.measurements {
-		if m.Valid && m.Time.After(st.NewestMeasurement) {
-			st.NewestMeasurement = m.Time
-		}
+	return ingestStatus{
+		NewestMeasurement:  s.newestValid,
+		LastSuccessfulPoll: s.lastSuccessfulPoll,
+		LastError:          s.lastError,
 	}
-	return st
 }
 
 func (s *store) isDirty() bool {
@@ -274,19 +279,32 @@ func (s *store) restore(snap snapshot) {
 	s.mast = snap.Mast
 	s.turbine = snap.Turbine
 	s.site = snap.Site
-	s.dirty = false
-	s.generation++
+	s.changed()
+	s.dirty = false // the data comes from the snapshot, nothing to save
 }
 
 // changed marks a data change. The caller holds the write lock.
 func (s *store) changed() {
 	s.dirty = true
 	s.generation++
+	s.newestValid = time.Time{}
+	for _, m := range s.measurements {
+		if m.Valid && m.Time.After(s.newestValid) {
+			s.newestValid = m.Time
+		}
+	}
 }
 
-// result returns the yield calculation for mode. It is computed at most
-// once per data change, so page views under load cost almost nothing.
+// result returns the yield calculation for mode.
 func (s *store) result(mode gapMode) (result, error) {
+	o, err := s.outcome(mode)
+	return o.result, err
+}
+
+// outcome returns the calculation and the charts for mode. They are
+// computed at most once per data change, so page views under load cost
+// almost nothing.
+func (s *store) outcome(mode gapMode) (calcOutcome, error) {
 	s.mu.RLock()
 	fresh := s.results != nil && s.resultsGeneration == s.generation
 	outcome, known := s.results[mode]
@@ -301,9 +319,9 @@ func (s *store) result(mode gapMode) (result, error) {
 		s.mu.Unlock()
 	}
 	if !known {
-		return result{}, fmt.Errorf("unknown gap mode %q", mode)
+		return calcOutcome{}, fmt.Errorf("unknown gap mode %q", mode)
 	}
-	return outcome.result, outcome.err
+	return outcome, outcome.err
 }
 
 // recalculate computes the results for all gap modes. The caller holds the
@@ -321,6 +339,10 @@ func (s *store) recalculate() {
 			o.err = errors.New("master data not loaded yet")
 		} else {
 			o.result, o.err = calculate(ms, *s.mast, *s.turbine, *s.site, mode)
+		}
+		if o.err == nil {
+			o.monthChart = monthChart(o.result)
+			o.dayChart = dayChart(o.result)
 		}
 		results[mode] = o
 	}

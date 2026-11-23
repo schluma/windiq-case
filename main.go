@@ -43,6 +43,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("MAX_INVALIDATIONS_PER_POLL: %w", err)
 	}
+	rateLimit, err := strconv.ParseFloat(envOr("RATE_LIMIT_PER_SECOND", "200"), 64)
+	if err != nil {
+		return fmt.Errorf("RATE_LIMIT_PER_SECOND: %w", err)
+	}
 	apiURL := envOr("WINDIQ_API_URL", "https://windiq-mock-api.sliplane.app")
 	snapshotPath := envOr("SNAPSHOT_PATH", "data/snapshot.json")
 	clientID := os.Getenv("WINDIQ_CLIENT_ID")
@@ -83,7 +87,8 @@ func run() error {
 		close(ingestDone)
 	}()
 
-	s := &server{maxAge: maxAge, store: st}
+	// Bursts of up to two seconds' worth of requests are allowed.
+	s := &server{maxAge: maxAge, store: st, limiter: newRateLimiter(rateLimit, 2*rateLimit)}
 
 	srv := &http.Server{
 		Addr:    ":" + port,

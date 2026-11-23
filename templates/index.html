@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WindIQ Ertrag</title>
+  <title>WindIQ Ertragsrechnung</title>
   <link rel="icon" href="/favicon.ico" type="image/svg+xml">
   <style>
     :root {
@@ -37,36 +37,30 @@
     svg .partial { opacity: .5; }
     svg .line { fill: none; stroke: var(--accent); stroke-width: 1.3; }
     svg .gap { stroke: var(--warn); stroke-width: 1.5; }
+    svg .month { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 3; }
     .legend { font-size: .85rem; color: var(--muted); }
     .swatch { display: inline-block; width: .8em; height: .8em; vertical-align: -.05em; border-radius: 2px; }
     table { border-collapse: collapse; }
     th, td { text-align: left; padding: .2rem 1.5rem .2rem 0; vertical-align: top; }
     th { font-weight: normal; color: var(--muted); }
     select { font: inherit; }
+    a { color: var(--accent); }
+    footer { margin-top: 2.5rem; border-top: 1px solid var(--border); }
+    .status { margin: .75rem 0 1rem; padding: .5rem .75rem; border-radius: 8px; border: 1px solid var(--border);
+              border-left: 4px solid var(--accent); background: var(--card); font-size: .95rem; }
+    .status-stale, .status-no_data { border-left-color: var(--warn); }
+    .status-error { color: var(--warn); margin-top: .25rem; overflow-wrap: anywhere; }
   </style>
 </head>
 <body>
-  <h1>WindIQ Ertrag</h1>
-  {{if .NewestMeasurement.IsZero}}
-    <p class="muted">Noch keine Messdaten geladen.</p>
-  {{else}}
-    <p class="muted">Neuester Messwert: {{.NewestMeasurement.UTC.Format "2006-01-02 15:04"}} UTC</p>
-  {{end}}
-
-  <form method="get">
-    <label>Fehlende Stunden
-      <select name="gaps" onchange="this.form.submit()">
-        <option value="ignore" {{if eq .Mode "ignore"}}selected{{end}}>ignorieren</option>
-        <option value="scale" {{if eq .Mode "scale"}}selected{{end}}>pro Monat hochrechnen</option>
-      </select>
-    </label>
-    <noscript><button>Anwenden</button></noscript>
-  </form>
+  <h1>WindIQ Ertragsrechnung</h1>
 
   {{if .CalcError}}
     <p class="muted">Noch kein Ergebnis: {{.CalcError}}</p>
   {{else}}
   {{with .Result}}
+  <h2>Jahresertrag</h2>
+  <p class="legend">12 Monate bis {{.To.UTC.Format "2006-01-02 15:04"}} UTC · siehe Berechnungsgrundlage</p>
   <div class="tiles">
     <div class="tile">
       <div class="label">AEP brutto</div>
@@ -83,32 +77,55 @@
       <div class="value">{{thousands .P90MWh}} MWh</div>
       <div class="sub">mit 90 % Wahrscheinlichkeit erreicht</div>
     </div>
-    <div class="tile">
-      <div class="label">Vollständigkeit</div>
-      <div class="value">{{printf "%.1f" .CompletenessPct}} %</div>
-      <div class="sub">{{.ValidHours}} von {{.ExpectedHours}} Stunden</div>
-    </div>
   </div>
-  <p class="muted">Zeitraum: {{.From.UTC.Format "2006-01-02 15:04"}} bis {{.To.UTC.Format "2006-01-02 15:04"}} UTC
-    {{if eq .Mode "ignore"}}· fehlende Stunden zählen nicht{{else}}· fehlende Stunden mit dem Mittel ihres Monats aufgefüllt{{end}}</p>
   {{end}}
 
   <h2>Bruttoenergie pro Monat</h2>
   <p class="legend">
     <span class="swatch" style="background: var(--accent)"></span> gemessen
-    {{if eq .Mode "scale"}}&nbsp; <span class="swatch" style="background: var(--accent-light)"></span> aufgefüllt{{end}}
-    &nbsp;· Prozent unter dem Monat = Anteil gültiger Stunden, <span class="warn">unter 95 % hervorgehoben</span>
-    &nbsp;· * = Monat liegt nur teilweise im Zeitraum (blasser)
+    {{- if eq .Mode "scale"}} &nbsp;<span class="swatch" style="background: var(--accent-light)"></span> geschätzt (fehlende Datenpunkte){{end}}
+    · * Monat nur teilweise im betrachteten Zeitraum
+    · Prozentsatz gültiger Datenpunkte, <span class="warn">unter 95 % hervorgehoben</span>
   </p>
   {{.MonthChart}}
 
   <h2>Windgeschwindigkeit auf Nabenhöhe, Tagesmittel</h2>
-  <p class="legend"><span class="warn">Striche unter der Achse</span> = Tage mit fehlenden Stunden; Lücken in der Linie = Tage ganz ohne gültigen Wert</p>
+  <p class="legend"><span class="warn">Markierung für Tage mit fehlenden Datenpunkten</span>; aussetzende
+    Linie bei Tagen ohne Datenpunkte</p>
   {{.DayChart}}
+  {{end}}
 
+  <h2>Berechnungsgrundlage</h2>
+
+  <div class="status status-{{.Freshness}}">
+    {{if eq .Freshness "ok"}}<strong>Daten aktuell</strong>
+    {{else if eq .Freshness "stale"}}<strong>Daten veraltet</strong> (älter als {{duration .MaxAge}})
+    {{else}}<strong>Noch keine Messdaten</strong>{{end}}
+    {{with .Ingest}}
+      {{if not .NewestMeasurement.IsZero}}· neuester Messwert {{.NewestMeasurement.UTC.Format "2006-01-02 15:04"}} UTC (vor {{ago .NewestMeasurement}}){{end}}
+      · letzter erfolgreicher Abruf {{if .LastSuccessfulPoll.IsZero}}noch keiner{{else}}vor {{ago .LastSuccessfulPoll}}{{end}}
+      {{if .LastError}}<div class="status-error">Letzter Fehler beim Abruf: {{.LastError}}</div>{{end}}
+    {{end}}
+  </div>
+
+  <form method="get">
+    <label>Fehlende Datenpunkte
+      <select name="gaps" onchange="this.form.submit()">
+        <option value="ignore" {{if eq .Mode "ignore" }}selected{{end}}>nicht einberechnen</option>
+        <option value="scale" {{if eq .Mode "scale" }}selected{{end}}>abschätzen (durch Monatsmittel)</option>
+      </select>
+    </label>
+    <noscript><button>Anwenden</button></noscript>
+  </form>
+
+  {{if not .CalcError}}
   {{with .Result}}
-  <h2>Berechnungsgrundlagen</h2>
   <table>
+    <tr>
+      <th>Zeitraum</th>
+      <td>{{.From.UTC.Format "2006-01-02 15:04"}} bis {{.To.UTC.Format "2006-01-02 15:04"}} UTC, stündliche Messungen</td>
+    </tr>
+    <tr><th>Vollständigkeit</th><td>{{.ValidHours}} von {{.ExpectedHours}} Stunden ({{printf "%.1f" .CompletenessPct}} %)</td></tr>
     <tr><th>Mittlere Windgeschwindigkeit Nabe</th><td>{{printf "%.2f" .MeanHubSpeedMS}} m/s</td></tr>
     <tr><th>Höhenfaktor (h<sub>Nabe</sub> / h<sub>Mess</sub>)<sup>α</sup></th><td>{{printf "%.4f" .ShearFactor}}</td></tr>
     <tr><th>Verlust Verfügbarkeit</th><td>{{printf "%.1f" (pct .Losses.Availability)}} %</td></tr>
@@ -120,5 +137,9 @@
   </table>
   {{end}}
   {{end}}
+
+  <footer class="muted legend">
+    <p>Fallstudie, Daten nicht zur echten Nutzung. Diese Seite verwendet keinerlei Cookies oder Tracking. Stand November 2026.</p>
+  </footer>
 </body>
 </html>

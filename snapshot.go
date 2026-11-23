@@ -30,9 +30,8 @@ type snapshot struct {
 	Site          *site         `json:"site,omitempty"`
 }
 
-// saveSnapshot writes the snapshot atomically: into a temporary file next to
-// the target, flushed to disk, then renamed. A crash while writing therefore
-// never leaves a half-written snapshot behind.
+// saveSnapshot writes the snapshot atomically.
+// A crash while writing therefore never leaves a half-written snapshot behind.
 func saveSnapshot(path string, snap snapshot) error {
 	dir := filepath.Dir(path)
 	err := os.MkdirAll(dir, 0o755)
@@ -44,8 +43,6 @@ func saveSnapshot(path string, snap snapshot) error {
 	if err != nil {
 		return err
 	}
-	// Removes the temporary file on every error path; after the rename
-	// it no longer exists and this does nothing.
 	defer os.Remove(tmp.Name())
 
 	err = json.NewEncoder(tmp).Encode(snap)

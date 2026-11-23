@@ -66,11 +66,11 @@ func (in *ingester) run(ctx context.Context) {
 	}
 }
 
-// retryDelay doubles from 15s per failure up to max and honors Retry-After.
-func retryDelay(failures int, err error, max time.Duration) time.Duration {
+// retryDelay doubles from 15s per failure up to limit and honors Retry-After.
+func retryDelay(failures int, err error, limit time.Duration) time.Duration {
 	d := 15 * time.Second << min(failures-1, 10)
-	if d > max {
-		d = max
+	if d > limit {
+		d = limit
 	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) && apiErr.RetryAfter > d {
@@ -213,7 +213,15 @@ func (in *ingester) refreshMasterData(ctx context.Context) error {
 
 	changed := in.store.setMasterData(validMast, validTurbine, validSite)
 	if changed {
-		slog.Info("master data updated", "turbine_version", t.Version, "site_version", s.Version)
+		// Only the versions that were taken over; rejected ones are in errs.
+		var attrs []any
+		if validTurbine != nil {
+			attrs = append(attrs, "turbine_version", validTurbine.Version)
+		}
+		if validSite != nil {
+			attrs = append(attrs, "site_version", validSite.Version)
+		}
+		slog.Info("master data updated", attrs...)
 	}
 	return errors.Join(errs...)
 }

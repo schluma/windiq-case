@@ -118,13 +118,43 @@ func TestIndex(t *testing.T) {
 			t.Error("expected placeholder text")
 		}
 	})
-	t.Run("with data", func(t *testing.T) {
+	t.Run("stale data", func(t *testing.T) {
 		newest := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
-		rec := do(t, newTestHandler(newest), http.MethodGet, "/")
-		if !strings.Contains(rec.Body.String(), "2026-11-23 12:00 UTC") {
-			t.Errorf("expected newest timestamp in body, got:\n%s", rec.Body.String())
+		body := do(t, newTestHandler(newest), http.MethodGet, "/").Body.String()
+		for _, want := range []string{"Daten veraltet", "2026-11-23 12:00 UTC", "status-stale"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("page does not contain %q", want)
+			}
 		}
 	})
+	t.Run("fresh data with ingest error", func(t *testing.T) {
+		st := newStore()
+		st.upsert([]measurement{{Time: time.Now().Add(-30 * time.Minute), SpeedMS: 5, Valid: true, Version: 1}})
+		st.recordPoll(errors.New("api status 503: down"), time.Now())
+		h := (&server{maxAge: 3 * time.Hour, store: st}).routes()
+		body := do(t, h, http.MethodGet, "/").Body.String()
+		for _, want := range []string{"Daten aktuell", "vor 30 Min.", "noch keiner", "Letzter Fehler beim Abruf: api status 503: down"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("page does not contain %q", want)
+			}
+		}
+	})
+}
+
+func TestFormatAgo(t *testing.T) {
+	tests := map[time.Duration]string{
+		20 * time.Second:             "unter 1 Min.",
+		42 * time.Minute:             "42 Min.",
+		125 * time.Minute:            "2 Std. 5 Min.",
+		3 * time.Hour:                "3 Std. 0 Min.",
+		5*24*time.Hour + 3*time.Hour: "5 Tage",
+	}
+	for d, want := range tests {
+		got := formatAgo(d)
+		if got != want {
+			t.Errorf("formatAgo(%v) = %q, want %q", d, got, want)
+		}
+	}
 }
 
 func TestIndexShowsResult(t *testing.T) {
@@ -151,6 +181,16 @@ func TestIndexShowsResult(t *testing.T) {
 			t.Errorf("page does not contain %q", want)
 		}
 	}
+	sections := []string{">Jahresertrag<", ">Bruttoenergie pro Monat<", ">Windgeschwindigkeit auf Nabenhöhe, Tagesmittel<", ">Berechnungsgrundlage<"}
+	previous := -1
+	for _, s := range sections {
+		at := strings.Index(body, s)
+		if at <= previous {
+			t.Errorf("section %q at %d, expected after position %d", s, at, previous)
+		}
+		previous = at
+	}
+
 	gross := strings.Index(body, ">AEP brutto<")
 	net := strings.Index(body, ">AEP netto (P50)<")
 	p90 := strings.Index(body, ">P90<")
